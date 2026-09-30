@@ -23,7 +23,7 @@ class Timeline {
         </div>
         <div class="tl-ruler"><div class="tl-ticks"></div><div class="tl-marks"></div><div class="tl-knob"></div></div>
       </div>
-      <div class="tl-body"><div class="tl-tracks"></div><div class="tl-line"></div><div class="tl-empty">動画を追加すると、ここに並びます</div></div>
+      <div class="tl-body"><div class="tl-tracks"></div><div class="tl-line"></div><div class="tl-empty">過去配信を追加すると、ここに並びます</div></div>
       <div class="tl-tip" hidden></div>`;
     this.ruler = root.querySelector('.tl-ruler');
     this.ticks = root.querySelector('.tl-ticks');
@@ -50,6 +50,9 @@ class Timeline {
     window.addEventListener('pointercancel', (e) => this.end(e));
     new ResizeObserver(() => { this.tickKey = ''; this.update(); }).observe(root);
   }
+
+  // ライブは時間の軸を持たないので、タイムラインには過去配信だけを並べる
+  vods() { return this.engine.tiles.filter((t) => t.type !== 'live'); }
 
   // ---------- 座標変換 ----------
   laneRect() { return this.ruler.getBoundingClientRect(); }
@@ -85,7 +88,7 @@ class Timeline {
 
   // ---------- ドラッグ ----------
   startScrub(e) {
-    if (e.button !== 0 || !this.engine.tiles.length) return;
+    if (e.button !== 0 || !this.vods().length) return;
     e.preventDefault();
     this.drag = { kind: 'scrub', last: 0 };
     this.scrubTo(e.clientX, true);
@@ -108,7 +111,7 @@ class Timeline {
 
   snapTargets(tile) {
     const out = [0, this.engine.master];
-    for (const t of this.engine.tiles) {
+    for (const t of this.vods()) {
       if (t === tile || !t.player?.ready) continue;
       out.push(-t.offset, t.player.getDuration() - t.offset);
     }
@@ -163,13 +166,13 @@ class Timeline {
   // 動画の追加・削除・名前変更のときだけ作り直す
   build() {
     this.tracks.innerHTML = '';
-    this.engine.tiles.forEach((tile, i) => {
+    this.vods().forEach((tile, i) => {
       const row = document.createElement('div');
       row.className = 'trk';
       row.style.setProperty('--c', tile.color);
       row.innerHTML = `
         <div class="trk-head">
-          <span class="chip">${i + 1}</span>
+          <span class="chip">${tile.num ?? i + 1}</span>
           <span class="trk-name"></span>
           <button class="ib xs trk-mute" data-tip="ミュート"><svg><use href="#i-vol"/></svg></button>
         </div>
@@ -184,7 +187,7 @@ class Timeline {
       tile.trk = row;
       this.tracks.appendChild(row);
     });
-    this.root.classList.toggle('is-empty', !this.engine.tiles.length);
+    this.root.classList.toggle('is-empty', !this.vods().length);
     this.update();
   }
 
@@ -242,9 +245,9 @@ class Timeline {
     this.knob.style.transform = `translateX(${px}px)`;
     this.line.style.transform = `translateX(${px}px)`;
     this.knob.hidden = !visible;
-    this.line.hidden = !visible || !this.engine.tiles.length;
+    this.line.hidden = !visible || !this.vods().length;
     const sel = this.hooks.selectedId();
-    for (const tile of this.engine.tiles) {
+    for (const tile of this.vods()) {
       if (!tile.trk) continue;
       const bar = tile.trk.querySelector('.trk-bar');
       const p = tile.player;

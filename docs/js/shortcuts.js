@@ -23,10 +23,10 @@ const SHORTCUT_ACTIONS = [
   { id: 'draw', label: '描画モード', def: 'D' },
   { id: 'undoDraw', label: '描画を1つ戻す', def: 'Ctrl+Z' },
   { id: 'clearDraw', label: '描画をすべて消す', def: 'C' },
-  { id: 'shot', label: 'スクリーンショット', def: 'S' },
   { id: 'layout', label: 'レイアウト切り替え', def: 'G' },
+  { id: 'rail', label: 'メンバー一覧の表示', def: 'U' },
   { id: 'side', label: 'クリップ一覧の表示', def: 'P' },
-  { id: 'add', label: 'URL 欄へ移動', def: 'A' },
+  { id: 'add', label: '入力欄へ移動', def: 'A' },
   { id: 'fullscreen', label: '全画面', def: 'F' },
   { id: 'help', label: '使い方・ショートカット一覧', def: '?' },
 ];

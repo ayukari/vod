@@ -24,7 +24,8 @@ class SyncEngine {
   on(ev, fn) { (this._handlers[ev] ||= []).push(fn); }
   emit(ev, ...a) { (this._handlers[ev] || []).forEach((fn) => fn(...a)); }
 
-  active() { return this.tiles.filter((t) => t.player && t.player.ready && !t.player.error); }
+  // ライブは同期の対象外（今この瞬間を流しているだけで、位置を合わせる意味がないため）
+  active() { return this.tiles.filter((t) => t.type !== 'live' && t.player && t.player.ready && !t.player.error); }
 
   // 共通タイムラインの長さ = 各動画が終わる master 時刻の最大値
   duration() {

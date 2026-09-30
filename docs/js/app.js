@@ -2,18 +2,17 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-const TILE_COLORS = ['#7fb3ff', '#f59e7a', '#9fd78a', '#d6a2f0', '#6fd3cf', '#f58fb0',
-  '#b0a4ff', '#e6a86a', '#8fd1a8', '#c9c9cf', '#a3c4f3', '#c9a0dc'];
+const VOD_COLORS = ['#7fb3ff', '#f59e7a', '#9fd78a', '#d6a2f0', '#6fd3cf', '#f58fb0'];
 const MAX_TILES = 12;
 const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const LAYOUTS = ['auto', '1', '2', '3', '4', 'focus'];
 const DRAW_COLORS = ['#f2d74e', '#ff5f57', '#5aa9ff', '#5fd08a', '#ffffff', '#111111'];
-const CANVAS_FONT = '"IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif';
 const MOBILE = () => window.matchMedia('(max-width: 760px)').matches;
 
 const settings = Object.assign({ skip: 5, skipBig: 30, fps: 30 }, storageGet('vod.settings', {}));
 const engine = new SyncEngine();
 const shortcuts = new Shortcuts();
+const roster = new Roster();
 const stage = $('#stage');
 const grid = $('#grid');
 const draw = new DrawLayer($('#draw-layer'), stage);
@@ -21,6 +20,7 @@ const draw = new DrawLayer($('#draw-layer'), stage);
 const state = {
   layout: 'auto', prevLayout: 'auto', focusId: null, selectedId: null,
   markers: [], allMuted: false, volume: 0.8, nextId: 1,
+  editing: null, // 左の一覧で「…」を開いているもの { kind: 'person' | 'group', key }
 };
 
 const timeline = new Timeline($('#timeline'), engine, {
@@ -31,6 +31,9 @@ const timeline = new Timeline($('#timeline'), engine, {
   selectedId: () => state.selectedId,
   allMuted: () => state.allMuted,
 });
+
+const vodTiles = () => engine.tiles.filter((t) => t.type !== 'live');
+const liveTile = (login) => engine.tiles.find((t) => t.type === 'live' && t.src === login) || null;
 
 // ============================================================
 // お知らせ・エラー
@@ -59,35 +62,25 @@ window.addEventListener('error', (e) => {
 });
 
 // ============================================================
-// 動画（タイル）の追加・削除
+// タイル（ライブ・過去配信）の追加・削除
 // ============================================================
-function pickColor() {
+function vodColor() {
   const used = new Set(engine.tiles.map((t) => t.color));
-  return TILE_COLORS.find((c) => !used.has(c)) || TILE_COLORS[engine.tiles.length % TILE_COLORS.length];
-}
-
-function defaultLabel(spec) {
-  if (spec.type === 'twitch') return `Twitch ${spec.src}`;
-  if (spec.type === 'niconico') return spec.src;
-  if (spec.type === 'url') {
-    try { return decodeURIComponent(new URL(spec.src).pathname.split('/').pop()) || '動画'; } catch { return '動画'; }
-  }
-  if (spec.type === 'local') return String(spec.src || '').replace(/\.[^.]+$/, '') || '動画ファイル';
-  return `${SOURCE_NAMES[spec.type]} 動画`;
+  return VOD_COLORS.find((c) => !used.has(c)) || VOD_COLORS[engine.tiles.length % VOD_COLORS.length];
 }
 
 function addTile(spec) {
-  if (engine.tiles.length >= MAX_TILES) { toast(`動画は ${MAX_TILES} 本までです`); return null; }
+  if (engine.tiles.length >= MAX_TILES) { toast(`同時に出せるのは ${MAX_TILES} 本までです`); return null; }
+  const person = spec.type === 'live' ? roster.add(spec.src, spec.label) : null;
   const tile = {
     id: state.nextId++,
     type: spec.type,
     src: spec.src,
-    file: spec.file || null,
-    label: spec.label || defaultLabel(spec),
-    autoLabel: spec.label ? !!spec.autoLabel : true,
-    offset: Number(spec.offset) || 0,
+    label: person ? person.name : (spec.label || `過去配信 ${spec.src}`),
+    autoLabel: !spec.label,
+    offset: spec.type === 'live' ? 0 : Number(spec.offset) || 0,
     muted: spec.muted ?? engine.tiles.length > 0, // 最初の1本だけ音を出す
-    color: pickColor(),
+    color: person ? person.color : vodColor(),
     status: 'loading',
     rt: { cmdAt: 0, cooldownUntil: 0, bufSince: 0 },
     player: null,
@@ -105,91 +98,49 @@ function buildTileEl(tile) {
   const el = document.createElement('div');
   el.className = 'tile';
   el.style.setProperty('--c', tile.color);
+  // 名前やボタンは映像の上に重ねず、上の細い帯に置く
+  // （Twitch は映像の上に何か重なっていると自動再生しないことがあるため）
   el.innerHTML = `
-    <div class="tile-media"></div>
-    <div class="tile-cover"></div>
-    <div class="tile-tag"><span class="chip"></span><span class="tile-name"></span></div>
-    <div class="tile-ctl">
+    <div class="tile-bar">
+      <span class="chip"></span><span class="tile-name"></span>
+      <span class="tile-meta"><span class="t"></span><span class="off" hidden></span></span>
       <button class="ib" data-act="mute" aria-label="ミュート"><svg><use href="#i-vol"/></svg></button>
       <button class="ib" data-act="focus" aria-label="大きく表示"><svg><use href="#i-focus"/></svg></button>
       <button class="ib" data-act="remove" aria-label="外す"><svg><use href="#i-x"/></svg></button>
     </div>
-    <div class="tile-meta"><span class="t">0:00.0</span><span class="off" hidden></span></div>
+    <div class="tile-media"></div>
     <div class="tile-msg passive" hidden></div>`;
   tile.el = el;
   tile.media = $('.tile-media', el);
   tile.msgEl = $('.tile-msg', el);
 
-  // 動画の上に透明な板を置き、クリックが埋め込みプレーヤーの中に入らないようにする
-  // （中に入るとキーボードショートカットが効かなくなるため）
-  const cover = $('.tile-cover', el);
-  cover.addEventListener('click', () => select(tile));
-  cover.addEventListener('dblclick', () => toggleFocus(tile));
-  $('.tile-ctl', el).addEventListener('click', (e) => {
+  const bar = $('.tile-bar', el);
+  bar.addEventListener('click', (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'mute') toggleTileMute(tile);
-    if (act === 'focus') toggleFocus(tile);
-    if (act === 'remove') removeTile(tile);
+    else if (act === 'focus') toggleFocus(tile);
+    else if (act === 'remove') removeTile(tile);
+    else select(tile);
   });
+  bar.addEventListener('dblclick', (e) => { if (!e.target.closest('[data-act]')) toggleFocus(tile); });
   grid.appendChild(el);
 }
 
 function startPlayer(tile) {
-  if (tile.type === 'local' && !tile.file) { showNeedFile(tile); return; }
   tile.status = 'loading';
   tile.player = createPlayer(tile, tile.media);
   tile.player
     .on('ready', () => {
       applyAudio(tile);
-      if (tile.player.supportsRate) tile.player.setRate(engine.rate);
       tile.rt.cooldownUntil = 0;
-      engine.syncTile(tile, performance.now());
-      timeline.update();
+      if (tile.type !== 'live') engine.syncTile(tile, performance.now());
       updateLive();
     })
-    .on('title', (title) => {
-      if (tile.autoLabel) { tile.label = title; renderStructure(); save(); }
-    })
+    .on('online', () => renderRoster())
     .on('error', () => { tile.status = 'error'; renderStructure(); })
     .on('blocked', () => {
-      // ブラウザが再生を止めたときは、少しの間だけ枠内を直接押せるようにする
-      const cover = $('.tile-cover', tile.el);
-      cover.style.pointerEvents = 'none';
-      toast(`${tile.label}: ブラウザが再生を止めました。その動画の枠内の再生ボタンを一度押してください`, 6000);
-      setTimeout(() => { cover.style.pointerEvents = ''; }, 15000);
+      toast(`${tile.label}: ブラウザが再生を止めました。その枠内の再生ボタンを一度押してください`, 6000);
     });
-}
-
-function showNeedFile(tile) {
-  tile.status = 'needfile';
-  const msg = tile.msgEl;
-  msg.hidden = false;
-  msg.className = 'tile-msg';
-  msg.replaceChildren();
-  const p = document.createElement('div');
-  p.textContent = `「${tile.src}」を選び直してください`;
-  const btn = document.createElement('button');
-  btn.className = 'btn';
-  btn.innerHTML = '<svg><use href="#i-file"/></svg>';
-  btn.append('ファイルを選ぶ');
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'video/*,.mkv';
-  input.hidden = true;
-  btn.addEventListener('click', () => input.click());
-  input.addEventListener('change', () => { if (input.files[0]) attachFile(tile, input.files[0]); });
-  msg.append(p, btn, input);
-  tile._msgKey = 'needfile';
-}
-
-function attachFile(tile, file) {
-  tile.file = file;
-  tile.src = file.name;
-  tile.msgEl.hidden = true;
-  tile._msgKey = null;
-  startPlayer(tile);
-  renderStructure();
-  save();
 }
 
 function removeTile(tile) {
@@ -198,7 +149,7 @@ function removeTile(tile) {
   engine.tiles = engine.tiles.filter((t) => t !== tile);
   if (state.focusId === tile.id) state.focusId = null;
   if (state.selectedId === tile.id) state.selectedId = engine.tiles[0]?.id ?? null;
-  if (!engine.tiles.length && engine.playing) engine.pause();
+  if (!vodTiles().length && engine.playing) engine.pause();
   renderStructure();
   save();
 }
@@ -210,19 +161,240 @@ function clearTiles() {
   state.selectedId = null;
 }
 
-// 複数行の URL をまとめて追加する。読めなかった行は理由つきで返す
+// ============================================================
+// メンバーのスイッチ
+// ============================================================
+function setLive(login, on) {
+  const cur = liveTile(login);
+  if (on && !cur) return !!addTile({ type: 'live', src: login });
+  if (!on && cur) removeTile(cur);
+  return true;
+}
+
+function groupMembers(g) { return g.members.filter((l) => roster.get(l)); }
+function groupState(g) {
+  const m = groupMembers(g);
+  const n = m.filter((l) => liveTile(l)).length;
+  if (!m.length || !n) return 'off';
+  return n === m.length ? 'on' : 'some';
+}
+function toggleGroup(g) {
+  const members = groupMembers(g);
+  if (!members.length) { toast('このグループにはまだ誰もいません'); return; }
+  if (groupState(g) === 'on') {
+    members.forEach((l) => setLive(l, false));
+    return;
+  }
+  const need = members.filter((l) => !liveTile(l));
+  const room = MAX_TILES - engine.tiles.length;
+  need.slice(0, room).forEach((l) => setLive(l, true));
+  if (need.length > room) toast(`同時に出せるのは ${MAX_TILES} 本までのため、${need.length - room} 人は出せませんでした`, 4000);
+}
+
+function liveBadge(login) {
+  const p = liveTile(login)?.player;
+  if (!p || p.online == null) return '';
+  return p.online ? '<span class="live-badge">LIVE</span>' : '<span class="off-badge">OFF</span>';
+}
+
+function renderRoster() {
+  // グループ
+  const gl = $('#group-list');
+  gl.replaceChildren();
+  for (const g of roster.groups) {
+    const li = document.createElement('li');
+    li.className = groupState(g);
+    const editing = state.editing?.kind === 'group' && state.editing.key === g.id;
+    li.classList.toggle('editing', editing);
+    li.innerHTML = `
+      <div class="roster-row">
+        <button class="roster-main"><span class="sw"></span><span class="roster-name"></span><span class="roster-sub">${groupMembers(g).length}人</span></button>
+        <button class="ib xs" aria-label="グループを編集"><svg><use href="#i-more"/></svg></button>
+      </div>`;
+    $('.roster-name', li).textContent = g.name;
+    $('.roster-main', li).addEventListener('click', () => toggleGroup(g));
+    $('.ib', li).addEventListener('click', () => { state.editing = editing ? null : { kind: 'group', key: g.id }; renderRoster(); });
+    if (editing) li.appendChild(groupEditor(g));
+    gl.appendChild(li);
+  }
+  $('#group-empty').hidden = roster.groups.length > 0;
+
+  // 全員
+  const pl = $('#people-list');
+  pl.replaceChildren();
+  for (const p of roster.people) {
+    const li = document.createElement('li');
+    li.className = liveTile(p.login) ? 'on' : 'off';
+    li.style.setProperty('--c', p.color);
+    const editing = state.editing?.kind === 'person' && state.editing.key === p.login;
+    li.classList.toggle('editing', editing);
+    li.innerHTML = `
+      <div class="roster-row">
+        <button class="roster-main"><span class="sw"></span><span class="person-dot"></span><span class="roster-name"></span>${liveBadge(p.login)}</button>
+        <button class="ib xs" aria-label="メンバーを編集"><svg><use href="#i-more"/></svg></button>
+      </div>`;
+    $('.roster-name', li).textContent = p.name;
+    $('.roster-main', li).title = p.name === p.login ? p.login : `${p.name}（${p.login}）`;
+    $('.roster-main', li).addEventListener('click', () => setLive(p.login, !liveTile(p.login)));
+    $('.ib', li).addEventListener('click', () => { state.editing = editing ? null : { kind: 'person', key: p.login }; renderRoster(); });
+    if (editing) li.appendChild(personEditor(p));
+    pl.appendChild(li);
+  }
+  $('#people-empty').hidden = roster.people.length > 0;
+  $('#people-count').textContent = roster.people.length || '';
+}
+
+function personEditor(p) {
+  const box = document.createElement('div');
+  box.className = 'roster-edit';
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.value = p.name;
+  name.maxLength = 60;
+  name.setAttribute('aria-label', '表示名');
+  name.addEventListener('change', () => {
+    roster.rename(p.login, name.value);
+    const t = liveTile(p.login);
+    if (t) { t.label = roster.get(p.login).name; renderStructure(); save(); }
+  });
+  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
+  box.appendChild(name);
+
+  if (roster.groups.length) {
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    for (const g of roster.groups) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = g.name;
+      b.classList.toggle('on', g.members.includes(p.login));
+      b.addEventListener('click', () => roster.toggleMember(g.id, p.login));
+      chips.appendChild(b);
+    }
+    box.appendChild(chips);
+  } else {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = 'グループを作ると、ここで出し入れできます';
+    box.appendChild(hint);
+  }
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  const link = document.createElement('a');
+  link.href = `https://www.twitch.tv/${p.login}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = `twitch.tv/${p.login}`;
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'txt small danger';
+  del.textContent = '登録を外す';
+  del.addEventListener('click', () => {
+    if (!confirm(`「${p.name}」の登録を外しますか？（グループからも外れます）`)) return;
+    setLive(p.login, false);
+    state.editing = null;
+    roster.remove(p.login);
+  });
+  row.append(link, del);
+  box.appendChild(row);
+  return box;
+}
+
+function groupEditor(g) {
+  const box = document.createElement('div');
+  box.className = 'roster-edit';
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.value = g.name;
+  name.maxLength = 60;
+  name.setAttribute('aria-label', 'グループ名');
+  name.addEventListener('change', () => roster.renameGroup(g.id, name.value));
+  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
+  box.appendChild(name);
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  for (const p of roster.people) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = p.name;
+    b.classList.toggle('on', g.members.includes(p.login));
+    b.addEventListener('click', () => roster.toggleMember(g.id, p.login));
+    chips.appendChild(b);
+  }
+  box.appendChild(chips);
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  const hint = document.createElement('span');
+  hint.className = 'hint';
+  hint.textContent = '押して出し入れ';
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'txt small danger';
+  del.textContent = 'グループを削除';
+  del.addEventListener('click', () => {
+    if (!confirm(`グループ「${g.name}」を削除しますか？（メンバーの登録は残ります）`)) return;
+    state.editing = null;
+    roster.removeGroup(g.id);
+  });
+  row.append(hint, del);
+  box.appendChild(row);
+  return box;
+}
+
+roster.onChange = renderRoster;
+
+function saveGroupFromScreen(name) {
+  const members = engine.tiles.filter((t) => t.type === 'live').map((t) => t.src);
+  if (!members.length) { toast('ライブが表示されていません。先にメンバーのスイッチを入れてください'); return false; }
+  const n = name.trim() || `グループ ${roster.groups.length + 1}`;
+  roster.addGroup(n, members);
+  toast(`「${n}」を保存しました（${members.length}人）`);
+  return true;
+}
+
+function exportRoster() {
+  if (!roster.people.length) { toast('登録しているメンバーがいません'); return; }
+  const d = new Date();
+  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  downloadBlob(new Blob([JSON.stringify(roster.toFile(), null, 2)], { type: 'application/json' }), `VOD_メンバー_${ymd}.json`);
+}
+
+async function importRoster(file) {
+  try {
+    const { addedPeople, addedGroups } = roster.merge(JSON.parse(await file.text()));
+    toast(`メンバー ${addedPeople} 人、グループ ${addedGroups} 個を追加しました`);
+  } catch {
+    toast('メンバーのファイルとして読み込めませんでした');
+  }
+}
+
+// ============================================================
+// 入力欄
+// ============================================================
+// 複数行・複数語をまとめて追加する。読めなかったものは理由つきで返す
 function addFromText(text) {
   const bad = [];
   let added = 0;
-  for (const line of text.split(/[\r\n\s]+/)) {
-    if (!line.trim()) continue;
-    const r = parseSource(line);
+  for (const word of text.split(/[\r\n\s,、]+/)) {
+    if (!word.trim()) continue;
+    const r = parseSource(word);
     if (!r) continue;
-    if (r.error) { bad.push({ line, reason: r.error }); continue; }
-    if (addTile({ type: r.type, src: r.src, offset: r.start })) added++;
+    if (r.error) { bad.push({ line: word, reason: r.error }); continue; }
+    if (r.type === 'live') {
+      const cur = liveTile(r.src);
+      if (cur) { select(cur); added++; continue; }
+      if (setLive(r.src, true)) added++;
+    } else if (addTile({ type: r.type, src: r.src, offset: r.start })) {
+      added++;
+    }
   }
   return { added, bad };
 }
+
+function showBad(bad) { omniError(bad.map((b) => `${b.line}\n→ ${b.reason}`).join('\n\n')); }
 
 function submitOmni() {
   const input = $('#omni-input');
@@ -230,25 +402,12 @@ function submitOmni() {
   const { added, bad } = addFromText(input.value);
   if (bad.length) {
     input.value = bad.map((b) => b.line).join(' ');
-    omniError(bad.map((b) => `${b.line}\n→ ${b.reason}`).join('\n\n'));
+    showBad(bad);
   } else {
     input.value = '';
     omniError('');
     if (added) input.blur();
   }
-}
-
-function addFiles(files) {
-  let added = 0;
-  for (const f of files) {
-    if (!(f.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v|ogv)$/i.test(f.name))) continue;
-    // 復元待ちの動画と名前が同じなら、そこに入れる
-    const waiting = engine.tiles.find((t) => t.type === 'local' && !t.file && t.src === f.name);
-    if (waiting) { attachFile(waiting, f); added++; continue; }
-    if (addTile({ type: 'local', src: f.name, file: f })) added++;
-  }
-  if (!added) toast('動画ファイルが見つかりませんでした');
-  return added;
 }
 
 // ============================================================
@@ -292,13 +451,13 @@ function soloAudio(index) {
 // レイアウト
 // ============================================================
 function bestColumns(n) {
-  // 16:9 の動画がいちばん大きく映る列数を選ぶ
+  // 16:9 の映像がいちばん大きく映る列数を選ぶ
   const r = stage.getBoundingClientRect();
   let best = 1;
   let bestArea = 0;
   for (let cols = 1; cols <= n; cols++) {
     const rows = Math.ceil(n / cols);
-    const fitW = Math.min(r.width / cols, (r.height / rows) * 16 / 9);
+    const fitW = Math.min(r.width / cols, (r.height / rows - 26) * 16 / 9); // 26px は上の帯
     const area = fitW * fitW;
     if (area > bestArea + 1) { bestArea = area; best = cols; }
   }
@@ -311,7 +470,7 @@ function applyLayout() {
   const focus = state.layout === 'focus' && n > 1;
   grid.classList.toggle('focus', focus);
   tiles.forEach((t) => t.el.classList.remove('big'));
-  // 動画の要素は並べ替えない（iframe を動かすと読み込み直しになるため）。配置は CSS grid で変える
+  // タイルの要素は並べ替えない（iframe を動かすと読み込み直しになるため）。配置は CSS grid で変える
   if (focus) {
     const big = tiles.find((t) => t.id === state.focusId) || tiles[0];
     state.focusId = big.id;
@@ -348,13 +507,11 @@ function cycleLayout() {
 new ResizeObserver(() => applyLayout()).observe(stage);
 
 // ============================================================
-// 再生操作
+// 過去配信の再生操作
 // ============================================================
 function togglePlay() {
-  if (!engine.playing && !engine.active().length) {
-    toast(engine.tiles.length ? '読み込み中です' : 'まず動画を追加してください');
-    return;
-  }
+  if (!vodTiles().length) { if (engine.tiles.length) toast('再生操作は過去配信にだけ使えます（ライブは止まりません）'); return; }
+  if (!engine.playing && !engine.active().length) { toast('読み込み中です'); return; }
   engine.toggle();
 }
 function seekBy(dt) { engine.seek(engine.master + dt); }
@@ -362,8 +519,7 @@ function seekBy(dt) { engine.seek(engine.master + dt); }
 function setRate(r) {
   engine.setRate(r);
   $('#t-rate').value = String(r);
-  const fixed = engine.tiles.filter((t) => t.player && !t.player.supportsRate);
-  toast(`${r.toFixed(2)}×` + (fixed.length && r !== 1 ? `（${fixed.map((t) => t.label).join('、')} は速度を変えられないため、位置合わせで追いかけます）` : ''), 4000);
+  toast(`${r.toFixed(2)}×` + (r !== 1 ? '（Twitch は速度を変えられないため、位置合わせで追いかけます）' : ''), 4000);
   save();
 }
 function stepRate(dir) {
@@ -382,7 +538,7 @@ engine.on('state', () => {
 // マーカー
 // ============================================================
 function addMarker() {
-  if (!engine.tiles.length) { toast('まず動画を追加してください'); return; }
+  if (!vodTiles().length) { toast('マーカーは過去配信に使えます'); return; }
   const t = Math.round(engine.master * 100) / 100;
   if (state.markers.some((m) => Math.abs(m.t - t) < 0.3)) { toast('この位置にはもうマーカーがあります'); return; }
   state.markers.push({ id: Date.now() + Math.random(), t, note: '' });
@@ -432,7 +588,7 @@ function renderMarkers() {
 }
 
 // ============================================================
-// クリップ一覧（開始位置の調整）
+// クリップ一覧（過去配信の開始位置の調整）
 // ============================================================
 function setOffset(tile, v, { seek = true } = {}) {
   tile.offset = Math.round(v * 1000) / 1000;
@@ -448,22 +604,30 @@ function setOffset(tile, v, { seek = true } = {}) {
 
 function nudgeSelected(seconds) {
   const tile = selectedTile();
-  if (!tile) { toast('ずらす動画をクリックして選んでください'); return; }
+  if (!tile || tile.type === 'live') { toast('ずらす過去配信をクリックして選んでください'); return; }
   setOffset(tile, tile.offset + seconds);
 }
 
 function renderStructure() {
+  engine.tiles.forEach((tile, i) => {
+    tile.num = i + 1;
+    $('.chip', tile.el).textContent = tile.num;
+    $('.tile-name', tile.el).textContent = tile.label;
+    tile.el.classList.toggle('sel', tile.id === state.selectedId);
+    $('.tile-bar [data-act="mute"]', tile.el).innerHTML =
+      `<svg><use href="#${tile.muted || state.allMuted ? 'i-mute' : 'i-vol'}"/></svg>`;
+  });
+
   const list = $('#clip-list');
   list.replaceChildren();
-  engine.tiles.forEach((tile, i) => {
+  for (const tile of vodTiles()) {
     const li = document.createElement('li');
     li.className = 'clip';
     li.style.setProperty('--c', tile.color);
     li.innerHTML = `
       <div class="clip-top">
-        <span class="chip">${i + 1}</span>
+        <span class="chip">${tile.num}</span>
         <input type="text" class="clip-name" aria-label="名前">
-        <span class="clip-src">${SOURCE_NAMES[tile.type]}</span>
         <button class="ib xs" data-act="mute" aria-label="ミュート"></button>
         <button class="ib xs" data-act="remove" aria-label="外す"><svg><use href="#i-x"/></svg></button>
       </div>
@@ -481,7 +645,7 @@ function renderStructure() {
     name.value = tile.label;
     name.addEventListener('focus', () => select(tile));
     name.addEventListener('change', () => {
-      tile.label = name.value.trim() || defaultLabel(tile);
+      tile.label = name.value.trim() || `過去配信 ${tile.src}`;
       tile.autoLabel = false;
       renderStructure();
       save();
@@ -507,21 +671,18 @@ function renderStructure() {
     off.addEventListener('keydown', (e) => { if (e.key === 'Enter') off.blur(); });
     tile.row = li;
     list.appendChild(li);
-
-    $('.chip', tile.el).textContent = i + 1;
-    $('.tile-name', tile.el).textContent = tile.label;
-    tile.el.classList.toggle('sel', tile.id === state.selectedId);
-    $('.tile-ctl [data-act="mute"]', tile.el).innerHTML =
-      `<svg><use href="#${tile.muted || state.allMuted ? 'i-mute' : 'i-vol'}"/></svg>`;
-  });
-  $('#clip-count').textContent = engine.tiles.length;
-  $('#clip-empty').hidden = engine.tiles.length > 0;
+  }
+  const vods = vodTiles().length;
+  $('#clip-count').textContent = vods;
+  $('#clip-empty').hidden = vods > 0;
+  document.body.classList.toggle('no-vod', !vods);
   $('#empty').hidden = engine.tiles.length > 0;
   const mb = $('#t-mute');
   mb.classList.toggle('muted', state.allMuted);
   $('use', mb).setAttribute('href', state.allMuted ? '#i-mute' : '#i-vol');
   applyLayout();
   timeline.build();
+  renderRoster();
   updateLive();
 }
 
@@ -532,14 +693,22 @@ function updateLive() {
 
   for (const tile of engine.tiles) {
     const p = tile.player;
+    const meta = $('.tile-meta .t', tile.el);
     let status = '';
     let cls = '';
     let msg = null;
-    if (tile.status === 'needfile') { status = 'ファイル未選択'; cls = 'warn'; }
-    else if (!p) { status = '準備中'; }
+    if (!p) { status = '準備中'; }
     else if (p.error) { status = p.error; cls = 'err'; msg = { key: 'err', text: p.error, err: true }; }
     else if (!p.ready) { status = '読み込み中'; msg = { key: 'loading', text: '読み込み中' }; }
-    else {
+    else if (tile.type === 'live') {
+      // オフラインのときは Twitch 自身がオフライン画面を出すので、こちらでは重ねない
+      const label = p.online === true ? 'LIVE' : p.online === false ? 'OFFLINE' : '';
+      if (meta.textContent !== label) {
+        meta.textContent = label;
+        meta.className = `t ${p.online ? 'live' : 'offline'}`;
+      }
+      meta.hidden = !label;
+    } else {
       const target = engine.master + tile.offset;
       if (tile.status === 'waiting') {
         status = `開始まで ${fmtTime(-target, true)}`;
@@ -549,13 +718,9 @@ function updateLive() {
         msg = { key: 'end', text: '終了' };
       } else {
         status = `${fmtTime(p.getTime(), true)} / ${fmtTime(p.getDuration())}`;
-        // YouTube は一度も再生していないと位置を動かせないため、その旨を出す
-        if (p.cued && !engine.playing && Math.abs(p.getTime() - target) > 0.5) {
-          msg = { key: 'cued', text: `再生すると ${fmtTime(target)} に合わせます` };
-        }
       }
-      if (!p.supportsRate && engine.rate !== 1) { status += '  速度変更不可'; cls = 'warn'; }
-      $('.tile-meta .t', tile.el).textContent = fmtTime(p.getTime(), true);
+      if (engine.rate !== 1) { status += '  速度変更不可'; cls = 'warn'; }
+      meta.textContent = fmtTime(p.getTime(), true);
     }
     if (tile.row) {
       const st = $('.clip-status', tile.row);
@@ -566,15 +731,13 @@ function updateLive() {
     off.hidden = !tile.offset;
     off.textContent = `${tile.offset > 0 ? '+' : ''}${fmtTime(tile.offset, true)}`;
 
-    if (tile.status !== 'needfile') {
-      const key = msg ? msg.key + msg.text : null;
-      if (tile._msgKey !== key) {
-        tile._msgKey = key;
-        tile.msgEl.hidden = !msg;
-        if (msg) {
-          tile.msgEl.className = `tile-msg ${msg.err ? 'err' : 'passive'}`;
-          tile.msgEl.textContent = msg.text;
-        }
+    const key = msg ? msg.key + msg.text : null;
+    if (tile._msgKey !== key) {
+      tile._msgKey = key;
+      tile.msgEl.hidden = !msg;
+      if (msg) {
+        tile.msgEl.className = `tile-msg ${msg.err ? 'err' : 'passive'}`;
+        tile.msgEl.textContent = msg.text;
       }
     }
   }
@@ -583,90 +746,17 @@ function updateLive() {
 engine.on('tick', updateLive);
 
 // ============================================================
-// スクリーンショット
-// ============================================================
-// 映像を画像に描けるか調べる（配信元が許可していない動画は描くとエラーになる）
-function capturableVideo(p) {
-  const v = p?.video;
-  if (!v || v.readyState < 2 || !v.videoWidth) return null;
-  if (p.canCapture) return v;
-  try {
-    const c = document.createElement('canvas');
-    c.width = 1;
-    c.height = 1;
-    const x = c.getContext('2d');
-    x.drawImage(v, 0, 0, 1, 1);
-    x.getImageData(0, 0, 1, 1);
-    return v;
-  } catch { return null; }
-}
-
-function takeScreenshot() {
-  if (!engine.tiles.length) { toast('まず動画を追加してください'); return; }
-  const r = stage.getBoundingClientRect();
-  const scale = Math.max(1, window.devicePixelRatio || 1);
-  const c = document.createElement('canvas');
-  c.width = Math.round(r.width * scale);
-  c.height = Math.round(r.height * scale);
-  const ctx = c.getContext('2d');
-  ctx.scale(scale, scale);
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, r.width, r.height);
-  let blocked = 0;
-  engine.tiles.forEach((t, i) => {
-    const tr = t.el.getBoundingClientRect();
-    const x = tr.left - r.left;
-    const y = tr.top - r.top;
-    const w = tr.width;
-    const h = tr.height;
-    ctx.fillStyle = '#050505';
-    ctx.fillRect(x, y, w, h);
-    const v = capturableVideo(t.player);
-    if (v) {
-      const s = Math.min(w / v.videoWidth, h / v.videoHeight);
-      const dw = v.videoWidth * s;
-      const dh = v.videoHeight * s;
-      ctx.drawImage(v, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
-    } else {
-      blocked++;
-      ctx.fillStyle = '#111113';
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = '#63636c';
-      ctx.font = `12px ${CANVAS_FONT}`;
-      ctx.textAlign = 'center';
-      ctx.fillText(`${SOURCE_NAMES[t.type]} の映像は画像に含められません`, x + w / 2, y + h / 2);
-    }
-    ctx.fillStyle = 'rgba(0,0,0,.62)';
-    ctx.fillRect(x + 6, y + 6, Math.min(w - 12, 28 + ctx.measureText(t.label).width + 40), 20);
-    ctx.fillStyle = t.color;
-    ctx.fillRect(x + 8, y + 8, 16, 16);
-    ctx.fillStyle = '#0b0b0c';
-    ctx.font = `600 10px ${CANVAS_FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText(String(i + 1), x + 16, y + 20);
-    ctx.fillStyle = '#ececee';
-    ctx.font = `11.5px ${CANVAS_FONT}`;
-    ctx.textAlign = 'left';
-    const time = t.player?.ready ? `  ${fmtTime(t.player.getTime(), true)}` : '';
-    ctx.fillText(`${t.label}${time}`, x + 30, y + 20, w - 44);
-  });
-  draw.render(ctx, r.width, r.height);
-  c.toBlob((b) => downloadBlob(b, `VOD_${stamp()}_${fmtTime(engine.master).replace(/:/g, '-')}.png`), 'image/png');
-  toast(blocked ? '保存しました（埋め込み動画の映像部分は含まれません）' : '保存しました', 3500);
-}
-
-// ============================================================
 // セッション・共有リンク
 // ============================================================
 function snapshot() {
   return {
-    app: 'VOD', version: 1, savedAt: Date.now(),
+    app: 'VOD', version: 2, savedAt: Date.now(),
     layout: state.layout,
     focusIndex: engine.tiles.findIndex((t) => t.id === state.focusId),
     rate: engine.rate, master: engine.master, volume: state.volume,
     tiles: engine.tiles.map((t) => ({
-      type: t.type, src: t.type === 'local' ? (t.file?.name || t.src) : t.src,
-      label: t.label, autoLabel: t.autoLabel, offset: t.offset, muted: t.muted,
+      type: t.type, src: t.src, label: t.type === 'live' ? '' : t.label,
+      autoLabel: t.autoLabel, offset: t.offset, muted: t.muted,
     })),
     markers: state.markers.map(({ t, note }) => ({ t, note })),
     strokes: draw.strokes,
@@ -674,16 +764,10 @@ function snapshot() {
 }
 
 function validSpec(s) {
-  if (!s || typeof s.src !== 'string' || s.src.length > 2000) return false;
-  switch (s.type) {
-    case 'youtube': return /^[\w-]{11}$/.test(s.src);
-    case 'twitch': return /^\d+$/.test(s.src);
-    case 'vimeo': return /^\d+(\/[0-9a-f]+)?$/i.test(s.src);
-    case 'niconico': return /^(sm|nm|so)\d+$/.test(s.src);
-    case 'url': try { return new URL(s.src).protocol === 'https:'; } catch { return false; }
-    case 'local': return true;
-    default: return false;
-  }
+  if (!s || typeof s.src !== 'string') return false;
+  if (s.type === 'live') return LOGIN_RE.test(s.src);
+  if (s.type === 'twitch') return /^\d+$/.test(s.src);
+  return false;
 }
 
 function restore(data) {
@@ -698,12 +782,12 @@ function restore(data) {
   $('#t-vol').value = state.volume;
   engine.rate = RATES.includes(data.rate) ? data.rate : 1;
   $('#t-rate').value = String(engine.rate);
-  for (const spec of data.tiles.filter(validSpec).slice(0, MAX_TILES)) {
+  const ok = data.tiles.filter(validSpec).slice(0, MAX_TILES);
+  for (const spec of ok) {
     addTile({
       type: spec.type, src: spec.src,
       label: typeof spec.label === 'string' ? spec.label.slice(0, 200) : '',
-      autoLabel: spec.autoLabel, offset: Number(spec.offset) || 0,
-      muted: spec.muted,
+      offset: Number(spec.offset) || 0, muted: spec.muted,
     });
   }
   const f = engine.tiles[data.focusIndex];
@@ -711,10 +795,11 @@ function restore(data) {
   // 動画の長さがまだ分からないので、制限をかけずに位置だけ戻す
   engine.master = Math.max(0, Number(data.master) || 0);
   draw.load(Array.isArray(data.strokes) ? data.strokes : []);
+  updateDrawVisibility();
   renderMarkers();
   renderStructure();
-  const missing = engine.tiles.filter((t) => t.type === 'local' && !t.file).length;
-  if (missing) toast(`手元のファイル ${missing} 本を選び直してください（画面にドロップしても入ります）`, 5000);
+  const dropped = data.tiles.length - ok.length;
+  if (dropped > 0) toast(`Twitch 以外の ${dropped} 本は読み込めません（このサイトは Twitch 専用になりました）`, 5000);
   return true;
 }
 
@@ -722,7 +807,13 @@ const save = debounce(() => {
   if (engine.tiles.length) storageSet('vod.autosave', snapshot());
 }, 600);
 setInterval(() => { if (engine.playing) save(); }, 5000);
-draw.onChange = save;
+
+// 描画用の透明な板は、描画中か線が残っているときだけ映像の上に出す
+function updateDrawVisibility() {
+  $('#draw-layer').classList.toggle('show', draw.enabled || draw.strokes.length > 0);
+  draw.resize();
+}
+draw.onChange = () => { updateDrawVisibility(); save(); };
 
 // 共有リンク：状態を URL の # 以降に入れる（サーバーには送られない）
 function b64urlEncode(str) {
@@ -737,16 +828,15 @@ function b64urlDecode(s) {
 }
 
 function shareLink() {
-  const shared = engine.tiles.filter((t) => t.type !== 'local');
   const data = {
-    v: 1,
-    t: shared.map((t) => [t.type, t.src, Math.round(t.offset * 1000) / 1000, t.autoLabel ? '' : t.label]),
+    v: 2,
+    t: engine.tiles.map((t) => [t.type, t.src, Math.round(t.offset * 1000) / 1000, t.type === 'live' || t.autoLabel ? '' : t.label]),
     m: state.markers.map((m) => [m.t, m.note]),
     l: state.layout,
     r: engine.rate,
     p: Math.round(engine.master * 100) / 100,
   };
-  return { url: `${location.origin}${location.pathname}#s=${b64urlEncode(JSON.stringify(data))}`, skipped: engine.tiles.length - shared.length };
+  return `${location.origin}${location.pathname}#s=${b64urlEncode(JSON.stringify(data))}`;
 }
 
 function loadShared(code) {
@@ -754,9 +844,7 @@ function loadShared(code) {
     const d = JSON.parse(b64urlDecode(code));
     if (!Array.isArray(d.t)) throw new Error('bad');
     return restore({
-      tiles: d.t.map(([type, src, offset, label]) => ({
-        type, src, offset, label: label || '', autoLabel: !label,
-      })).map((s, i) => ({ ...s, muted: i > 0 })),
+      tiles: d.t.map(([type, src, offset, label], i) => ({ type, src, offset, label: label || '', muted: i > 0 })),
       markers: (d.m || []).map(([t, note]) => ({ t, note })),
       layout: d.l, rate: d.r, master: d.p,
     });
@@ -776,12 +864,9 @@ function checkHash() {
 window.addEventListener('hashchange', checkHash);
 
 function openShare() {
-  if (!engine.tiles.length) { toast('共有する動画がありません'); return; }
-  const { url, skipped } = shareLink();
-  $('#share-url').value = url;
-  const note = $('#share-note');
-  note.hidden = !skipped;
-  note.textContent = `手元のファイル ${skipped} 本はリンクに含まれません。`;
+  if (!engine.tiles.length) { toast('共有するものがありません'); return; }
+  $('#share-url').value = shareLink();
+  $('#share-note').hidden = true;
   $('#dlg-share').showModal();
   $('#share-url').select();
 }
@@ -832,7 +917,7 @@ function renderSessions() {
 }
 
 function saveSession() {
-  if (!engine.tiles.length) { toast('保存する動画がありません'); return; }
+  if (!engine.tiles.length) { toast('保存するものがありません'); return; }
   const input = $('#session-name');
   const d = new Date();
   const name = input.value.trim() || `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -856,6 +941,7 @@ function setDrawMode(on) {
   draw.setEnabled(on);
   $('#drawbar').hidden = !on;
   $('#btn-draw').classList.toggle('on', on);
+  updateDrawVisibility();
 }
 
 function initDrawBar() {
@@ -902,7 +988,7 @@ function initDialogs() {
   $('#session-save').addEventListener('click', saveSession);
   $('#session-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveSession(); } });
   $('#session-export').addEventListener('click', () => {
-    if (!engine.tiles.length) { toast('書き出す動画がありません'); return; }
+    if (!engine.tiles.length) { toast('書き出すものがありません'); return; }
     downloadBlob(new Blob([JSON.stringify(snapshot(), null, 2)], { type: 'application/json' }), `VOD_${stamp()}.json`);
   });
   $('#session-import-btn').addEventListener('click', () => $('#session-import').click());
@@ -912,6 +998,7 @@ function initDialogs() {
     if (!f) return;
     try {
       const data = JSON.parse(await f.text());
+      if (data?.kind === 'roster') { await importRoster(f); $('#dlg-session').close(); return; }
       if (engine.tiles.length && !confirm('今の画面を閉じて開きますか？')) return;
       if (restore(data)) { $('#dlg-session').close(); toast(`「${f.name}」を読み込みました`); }
     } catch {
@@ -960,7 +1047,7 @@ function renderHelpKeys() {
   const box = $('#help-keys');
   box.replaceChildren();
   const rows = SHORTCUT_ACTIONS.map((a) => [a.label, comboLabel(shortcuts.map[a.id])]);
-  rows.push(['その動画の音だけ出す', '1 – 9']);
+  rows.push(['その番号の枠の音だけ出す', '1 – 9']);
   for (const [label, key] of rows) {
     const d = document.createElement('div');
     const l = document.createElement('span');
@@ -984,15 +1071,26 @@ function openHelp() { renderHelpKeys(); $('#dlg-help').showModal(); }
 function openSessions() { renderSessions(); $('#dlg-session').showModal(); }
 
 // ============================================================
-// キーボード
+// パネルの出し入れ・キーボード
 // ============================================================
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen?.().catch(() => toast('この端末では全画面にできません'));
 }
+function syncPanelButtons() {
+  $('#btn-panel').classList.toggle('on', !document.body.classList.contains('insp-hidden'));
+  $('#btn-rail').classList.toggle('on', !document.body.classList.contains('rail-hidden'));
+}
 function toggleInspector() {
   document.body.classList.toggle('insp-hidden');
-  $('#btn-panel').classList.toggle('on', !document.body.classList.contains('insp-hidden'));
+  // スマホでは下から出るシートなので、2つ同時には出さない
+  if (MOBILE() && !document.body.classList.contains('insp-hidden')) document.body.classList.add('rail-hidden');
+  syncPanelButtons();
+}
+function toggleRail() {
+  document.body.classList.toggle('rail-hidden');
+  if (MOBILE() && !document.body.classList.contains('rail-hidden')) document.body.classList.add('insp-hidden');
+  syncPanelButtons();
 }
 
 const ACTIONS = {
@@ -1018,8 +1116,8 @@ const ACTIONS = {
   draw: () => setDrawMode(!draw.enabled),
   undoDraw: () => draw.undo(),
   clearDraw: () => draw.clear(),
-  shot: takeScreenshot,
   layout: cycleLayout,
+  rail: toggleRail,
   side: toggleInspector,
   add: () => $('#omni-input').focus(),
   fullscreen: toggleFullscreen,
@@ -1038,7 +1136,7 @@ document.addEventListener('keydown', (e) => {
     } else {
       const combo = comboFromEvent(e);
       if (!combo) return;
-      if (/^[1-9]$/.test(combo)) { toast('1〜9 は「その動画の音だけ出す」に使われています'); return; }
+      if (/^[1-9]$/.test(combo)) { toast('1〜9 は「その番号の枠の音だけ出す」に使われています'); return; }
       shortcuts.set(id, combo);
     }
     recording = null;
@@ -1057,16 +1155,16 @@ document.addEventListener('keydown', (e) => {
   if (act) { e.preventDefault(); ACTIONS[act](); }
 }, true);
 
-// URL をどこで貼り付けても追加できるようにする
+// チャンネル名や URL をどこで貼り付けても追加できるようにする
 document.addEventListener('paste', (e) => {
   const t = e.target;
   if ((t.tagName === 'INPUT' && t.id !== 'omni-input') || t.tagName === 'TEXTAREA') return;
   const text = e.clipboardData?.getData('text') || '';
   if (!text.trim()) return;
   if (t.id === 'omni-input') {
-    // 全部読める URL なら、そのまま追加する。読めない行があれば欄に貼って理由を出す
-    const lines = text.split(/[\r\n\s]+/).filter(Boolean);
-    if (!lines.every((l) => { const r = parseSource(l); return r && !r.error; })) return;
+    // URL として全部読めるときだけ、そのまま追加する（チャンネル名の手入力の途中は邪魔しない）
+    const words = text.split(/[\r\n\s]+/).filter(Boolean);
+    if (!words.every((w) => /[/.]/.test(w) && !parseSource(w)?.error)) return;
     e.preventDefault();
     addFromText(text);
     t.value = '';
@@ -1076,7 +1174,7 @@ document.addEventListener('paste', (e) => {
   }
   e.preventDefault();
   const { bad } = addFromText(text);
-  if (bad.length) omniError(bad.map((b) => `${b.line}\n→ ${b.reason}`).join('\n\n'));
+  if (bad.length) showBad(bad);
 });
 
 // iframe にフォーカスが移ってしまったら取り戻す（ショートカットが効かなくなるのを防ぐ）
@@ -1086,15 +1184,15 @@ window.addEventListener('blur', () => setTimeout(() => {
 // ボタンを押したあとフォーカスを残さない（スペースキーでボタンが二重に押されるのを防ぐ）
 document.addEventListener('click', (e) => {
   const b = e.target.closest('button');
-  if (b && !b.closest('dialog')) b.blur();
+  if (b && !b.closest('dialog, .roster-edit, #group-form')) b.blur();
 });
 
 // ============================================================
-// ドラッグ＆ドロップ
+// ドラッグ＆ドロップ（URL の文字列だけ受け付ける）
 // ============================================================
 let dragDepth = 0;
 window.addEventListener('dragenter', (e) => {
-  if (![...e.dataTransfer.types].some((x) => x === 'Files' || x === 'text/uri-list' || x === 'text/plain')) return;
+  if (![...e.dataTransfer.types].some((x) => x === 'text/uri-list' || x === 'text/plain')) return;
   dragDepth++;
   $('#drop-hint').hidden = false;
 });
@@ -1104,11 +1202,11 @@ window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   $('#drop-hint').hidden = true;
-  if (e.dataTransfer.files.length) { addFiles([...e.dataTransfer.files]); return; }
+  if (e.dataTransfer.files.length) { toast('ファイルには対応していません（Twitch 専用です）'); return; }
   const text = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
   if (text) {
     const { bad } = addFromText(text.split(/\r?\n/).filter((l) => !l.startsWith('#')).join('\n'));
-    if (bad.length) omniError(bad.map((b) => `${b.line}\n→ ${b.reason}`).join('\n\n'));
+    if (bad.length) showBad(bad);
   }
 });
 
@@ -1118,16 +1216,34 @@ window.addEventListener('drop', (e) => {
 function init() {
   $('#omni').addEventListener('submit', (e) => { e.preventDefault(); submitOmni(); });
   $('#omni-input').addEventListener('input', () => omniError(''));
-  $('#btn-file').addEventListener('click', () => $('#file-input').click());
-  $('#file-input').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
+  $('#btn-rail').addEventListener('click', toggleRail);
   $('#btn-draw').addEventListener('click', () => setDrawMode(!draw.enabled));
-  $('#btn-shot').addEventListener('click', takeScreenshot);
   $('#btn-share').addEventListener('click', openShare);
   $('#btn-session').addEventListener('click', openSessions);
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-help').addEventListener('click', openHelp);
   $('#btn-panel').addEventListener('click', toggleInspector);
   $$('#layout-seg button').forEach((b) => b.addEventListener('click', () => setLayout(b.dataset.layout)));
+
+  $('#roster-export').addEventListener('click', exportRoster);
+  $('#roster-import-btn').addEventListener('click', () => $('#roster-import').click());
+  $('#roster-import').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) await importRoster(f);
+  });
+  $('#group-new').addEventListener('click', () => {
+    const form = $('#group-form');
+    form.hidden = !form.hidden;
+    if (!form.hidden) $('#group-name').focus();
+  });
+  $('#group-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (saveGroupFromScreen($('#group-name').value)) {
+      $('#group-name').value = '';
+      $('#group-form').hidden = true;
+    }
+  });
 
   $('#t-play').addEventListener('click', togglePlay);
   $('#t-start').addEventListener('click', () => engine.seek(0));
@@ -1153,17 +1269,24 @@ function init() {
 
   initDrawBar();
   initDialogs();
-  if (MOBILE()) document.body.classList.add('insp-hidden');
-  $('#btn-panel').classList.toggle('on', !document.body.classList.contains('insp-hidden'));
+  if (MOBILE()) document.body.classList.add('insp-hidden', 'rail-hidden');
+  // 画面幅がスマホ幅をまたいだら、パネルの出し方を切り替える
+  window.matchMedia('(max-width: 760px)').addEventListener('change', (e) => {
+    if (e.matches) document.body.classList.add('insp-hidden', 'rail-hidden');
+    else document.body.classList.remove('insp-hidden', 'rail-hidden');
+    syncPanelButtons();
+  });
+  syncPanelButtons();
   renderMarkers();
   renderStructure();
 
   if (checkHash()) return;
   const auto = storageGet('vod.autosave', null);
-  if (auto && Array.isArray(auto.tiles) && auto.tiles.length) {
+  const usable = auto && Array.isArray(auto.tiles) ? auto.tiles.filter(validSpec).length : 0;
+  if (usable) {
     const b = $('#empty-restore');
     b.hidden = false;
-    b.textContent = `前回の続きを開く（${auto.tiles.length}本）`;
+    b.textContent = `前回の続きを開く（${usable}本）`;
     b.addEventListener('click', () => restore(auto));
   }
 }

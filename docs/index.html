@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>VOD</title>
-<meta name="description" content="YouTube・Twitch・Vimeo・ニコニコ動画・動画ファイルを並べて、ひとつのタイムラインで同期再生するブラウザツール。インストール不要・登録不要。">
-<meta property="og:title" content="VOD — 複数視点の同期再生">
-<meta property="og:description" content="複数の動画を並べて、まとめて再生・シーク。開始位置の調整、描画、マーカー、共有リンク。">
+<meta name="description" content="Twitch のライブを並べて見るためのツール。チャンネルを登録しておけば、スイッチ1つで呼び出せる。過去の配信は共通タイムラインで同期再生。">
+<meta property="og:title" content="VOD — Twitch を並べて見る">
+<meta property="og:description" content="登録したメンバーのライブをスイッチ1つで並べて表示。グループでまとめて呼び出し、過去の配信は同期再生。">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#0b0b0c">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -48,17 +48,20 @@
   <symbol id="i-line" viewBox="0 0 24 24"><path d="M5 19L19 5"/></symbol>
   <symbol id="i-rect" viewBox="0 0 24 24"><rect x="4.5" y="6.5" width="15" height="11" rx="1"/></symbol>
   <symbol id="i-circle" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8" ry="6.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v10M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5v-10M7.5 9.5L12 5l4.5 4.5M5 19.5h14"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6"/><path d="M15.5 5.6a3 3 0 0 1 0 5.8M17.2 14.6c1.8.5 3 1.9 3.3 4.4"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="1"/><path d="M15.5 8.5v-4h-11v11h4"/></symbol>
 </svg>
 
 <header class="bar">
   <a class="mark" href="./" aria-label="VOD トップ">VOD</a>
+  <button id="btn-rail" class="ib" data-tip="メンバー U"><svg><use href="#i-users"/></svg></button>
   <form class="omni" id="omni" autocomplete="off">
     <svg class="omni-ic" aria-hidden="true"><use href="#i-link"/></svg>
-    <input id="omni-input" type="text" inputmode="url" spellcheck="false"
-      placeholder="動画の URL を貼り付けて Enter" aria-label="動画の URL">
-    <button type="button" id="btn-file" class="ib" data-tip="ファイルを開く"><svg><use href="#i-file"/></svg></button>
-    <input type="file" id="file-input" accept="video/*,.mkv" multiple hidden>
+    <input id="omni-input" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
+      placeholder="Twitch のチャンネル名か URL を入れて Enter" aria-label="Twitch のチャンネル名か URL">
   </form>
   <nav class="tools" aria-label="ツール">
     <div class="seg" id="layout-seg" role="group" aria-label="レイアウト">
@@ -71,7 +74,6 @@
     </div>
     <span class="sep"></span>
     <button id="btn-draw" class="ib" data-tip="描画 D"><svg><use href="#i-pen"/></svg></button>
-    <button id="btn-shot" class="ib" data-tip="スクリーンショット S"><svg><use href="#i-camera"/></svg></button>
     <span class="sep"></span>
     <button id="btn-share" class="ib" data-tip="共有リンク"><svg><use href="#i-link"/></svg></button>
     <button id="btn-session" class="ib" data-tip="セッション"><svg><use href="#i-stack"/></svg></button>
@@ -99,22 +101,45 @@
 </div>
 
 <main class="main">
+  <aside id="rail" class="rail">
+    <header class="rail-head">
+      <span class="rail-title">メンバー</span>
+      <button class="ib sm" id="roster-export" data-tip="ファイルに書き出す"><svg><use href="#i-download"/></svg></button>
+      <button class="ib sm" id="roster-import-btn" data-tip="ファイルから読み込む"><svg><use href="#i-upload"/></svg></button>
+      <input type="file" id="roster-import" accept=".json,application/json" hidden>
+    </header>
+    <div class="rail-body">
+      <section class="rail-sec">
+        <div class="rail-sec-head"><span>グループ</span><button type="button" class="txt small" id="group-new">今の画面を保存</button></div>
+        <form id="group-form" class="group-form" hidden>
+          <input type="text" id="group-name" placeholder="グループ名" maxlength="60">
+          <button class="btn primary">保存</button>
+        </form>
+        <ul id="group-list" class="roster-list"></ul>
+        <p id="group-empty" class="rail-empty">ライブを並べてから「今の画面を保存」を押すと、その顔ぶれをスイッチ1つで呼び出せます。</p>
+      </section>
+      <section class="rail-sec">
+        <div class="rail-sec-head"><span>全員</span><span id="people-count" class="rail-count"></span></div>
+        <ul id="people-list" class="roster-list"></ul>
+        <p id="people-empty" class="rail-empty">上の欄にチャンネル名を入れると、ここに登録されます。</p>
+      </section>
+    </div>
+  </aside>
+
   <section id="stage" class="stage">
     <div id="grid" class="grid"></div>
     <canvas id="draw-layer" class="draw-layer"></canvas>
     <div id="empty" class="empty">
       <div class="empty-inner">
-        <p class="empty-lead">URL を貼り付けるか、動画ファイルをドロップ</p>
+        <p class="empty-lead">Twitch のチャンネル名か URL を上の欄に</p>
         <dl class="empty-src">
-          <dt>YouTube</dt><dd>動画・ライブのアーカイブ</dd>
-          <dt>Twitch</dt><dd>過去の配信（/videos/）</dd>
-          <dt>Vimeo</dt><dd>公開・限定公開</dd>
-          <dt>ニコニコ</dt><dd>sm / so で始まる動画（試験対応）</dd>
-          <dt>直リンク</dt><dd>.mp4 .webm .mov .m3u8</dd>
-          <dt>ファイル</dt><dd>手元の動画ファイル</dd>
+          <dt>チャンネル名</dt><dd>名前だけでライブを表示し、左のメンバーに登録</dd>
+          <dt>twitch.tv/名前</dt><dd>チャンネルの URL でも同じ</dd>
+          <dt>/videos/…</dt><dd>過去の配信は、並べて同期再生</dd>
         </dl>
+        <p class="empty-note">一度登録すれば、次からは左のスイッチを入れるだけ。</p>
         <button id="empty-restore" class="txt" hidden></button>
-        <p class="empty-note">読み込んだ動画やメモは、このブラウザの中だけで扱います。</p>
+        <p class="empty-note">登録したメンバーはこのブラウザに保存され、ファイルに書き出して別の端末へ移せます。</p>
       </div>
     </div>
     <div id="drop-hint" class="drop-hint" hidden><span>ドロップして追加</span></div>
@@ -188,7 +213,7 @@
       <button type="button" id="session-save" class="btn primary">保存</button>
     </div>
     <ul id="session-list" class="session-list"></ul>
-    <p class="dlg-text faint">このブラウザに保存されます。手元のファイルは名前だけを覚えるので、開いたあとに選び直してください。</p>
+    <p class="dlg-text faint">並べているライブ・過去配信・開始位置・マーカー・レイアウトを、このブラウザに保存します。メンバーとグループは左の一覧に別に保存されています。</p>
     <footer class="dlg-foot">
       <button type="button" id="session-export" class="btn">書き出し（.json）</button>
       <button type="button" id="session-import-btn" class="btn">読み込み</button>
@@ -222,21 +247,22 @@
   <form method="dialog" class="dlg-inner">
     <header class="dlg-head"><h2>使い方</h2><button value="close" class="ib" aria-label="閉じる"><svg><use href="#i-x"/></svg></button></header>
     <ol class="steps">
-      <li><b>追加</b>上の欄に URL を貼り付けて Enter。複数行をまとめて貼っても入ります。ファイルは画面にドロップ。</li>
-      <li><b>そろえる</b>下のタイムラインの棒を左右にドラッグするか、右のクリップ一覧の ±ボタンで、同じ瞬間が重なるように開始位置を合わせます。棒は 0・再生位置・ほかの動画の端・マーカーに吸い付きます（Alt で解除）。</li>
-      <li><b>見る</b>再生・停止・シーク・コマ送りは全部の動画に同時にかかります。</li>
-      <li><b>残す</b>描画、マーカー、スクリーンショット。状態はセッションとして保存でき、共有リンクで人に渡せます。</li>
+      <li><b>登録</b>上の欄に Twitch のチャンネル名か URL を入れて Enter。ライブが表示され、左のメンバーに登録されます。複数まとめて貼っても入ります。</li>
+      <li><b>呼び出す</b>左のメンバーを押すとスイッチが入り、その人のライブが並びます。もう一度押すと消えます。</li>
+      <li><b>グループ</b>ライブを並べた状態で「今の画面を保存」を押して名前を付けると、そのグループのスイッチ1つで全員をまとめて出し入れできます。メンバーの「…」からグループへの出し入れもできます。</li>
+      <li><b>ファイル</b>左上の矢印ボタンで、メンバーとグループを JSON ファイルに書き出し・読み込みできます。別の PC や仲間に渡すときに使います。</li>
+      <li><b>過去配信</b>twitch.tv/videos/… の URL を入れると、下のタイムラインで同期再生できます。棒を左右にドラッグするか、右の ±ボタンで同じ瞬間に合わせます。</li>
     </ol>
     <h3>キー</h3>
     <div id="help-keys" class="help-keys"></div>
     <h3>できないこと</h3>
     <ul class="limits">
-      <li>YouTube・Twitch・Vimeo・ニコニコの映像はブラウザの仕組み上スクリーンショットに写りません。描画・名前・時刻は写ります。</li>
-      <li>Twitch とニコニコは再生速度を変えられないため、1× 以外では位置合わせのシークで追いかけます。</li>
-      <li>Kick、X、TikTok、Instagram、Twitch のクリップなど、外から再生位置を操作する仕組みがないサイトは同期できません。</li>
-      <li>直リンク・m3u8 は、配信元がブラウザからの読み込みを許可している場合だけ再生できます。</li>
+      <li>スイッチが入っていないメンバーが配信中かどうかは分かりません（Twitch の公式の仕組みでは、ログインや鍵なしに調べられないため）。スイッチを入れると表示されます。</li>
+      <li>Twitch 以外のサイトと、Twitch のクリップには対応していません。</li>
+      <li>Twitch の埋め込みプレーヤーは再生速度を変えられないため、過去配信を 1× 以外で見ると位置合わせのシークで追いかけます。</li>
+      <li>ブラウザによっては、音ありの自動再生が止められます。そのときは動画の枠内の再生ボタンを一度押してください。</li>
+      <li>Twitch は、枠が小さすぎる（400×300 未満）ときや、映像の上に描画が残っているときに自動再生しないことがあります。並べる数を減らすか、描画を消してください。</li>
       <li>iPhone / iPad では、複数の動画を音ありで同時に再生できないことがあります。ミュートなら再生できます。</li>
-      <li>ニコニコ動画は公式に公開されていない仕組みを使っているため、将来動かなくなる可能性があります。</li>
     </ul>
   </form>
 </dialog>
@@ -247,6 +273,7 @@
 <script src="js/draw.js"></script>
 <script src="js/shortcuts.js"></script>
 <script src="js/timeline.js"></script>
+<script src="js/roster.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
