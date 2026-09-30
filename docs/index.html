@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>VOD</title>
+<meta name="description" content="YouTube・Twitch・Vimeo・ニコニコ動画・動画ファイルを並べて、ひとつのタイムラインで同期再生するブラウザツール。インストール不要・登録不要。">
+<meta property="og:title" content="VOD — 複数視点の同期再生">
+<meta property="og:description" content="複数の動画を並べて、まとめて再生・シーク。開始位置の調整、描画、マーカー、共有リンク。">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0b0b0c">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 5v14l11-7z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.2v14H7zM13.8 5H17v14h-3.2z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-start" viewBox="0 0 24 24"><path d="M6.5 5.5v13"/><path d="M18 6v12l-8.5-6z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M11.5 6.5v11L4 12zM20 6.5v11L12.5 12z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-fwd" viewBox="0 0 24 24"><path d="M12.5 6.5v11L20 12zM4 6.5v11L11.5 12z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-fback" viewBox="0 0 24 24"><path d="M7 6.5v11"/><path d="M17 7v10l-7-5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-ffwd" viewBox="0 0 24 24"><path d="M17 6.5v11"/><path d="M7 7v10l7-5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.5 7.5 0 0 1 0 10.4"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9.5l5 5M20.5 9.5l-5 5"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 20.5v-16M6 4.5h11l-2.5 4 2.5 4H6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-focus" viewBox="0 0 24 24"><rect x="3.5" y="5" width="11" height="14" rx="1"/><path d="M17.5 5h3M17.5 12h3M17.5 19h3"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="5" width="7" height="6" rx="1"/><rect x="13" y="5" width="7" height="6" rx="1"/><rect x="4" y="13" width="7" height="6" rx="1"/><rect x="13" y="13" width="7" height="6" rx="1"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4.2L15.8 5a2 2 0 0 1 2.9 0l.3.3a2 2 0 0 1 0 2.9L8.7 18.5z"/><path d="M13.5 7.3l3.2 3.2"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.5h3.2L9 6h6l1.8 2.5H20v10H4z"/><circle cx="12" cy="13.3" r="3.2"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-stack" viewBox="0 0 24 24"><path d="M12 4.5l8 4-8 4-8-4z"/><path d="M4 12.5l8 4 8-4M4 16.2l8 4 8-4"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M5 7h9M18 7h1M5 17h2M11 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.8 9.6a2.3 2.3 0 1 1 3.2 2.1c-.7.3-1 .8-1 1.5v.4"/><path d="M12 16.6v.2"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1"/><path d="M14.5 5v14"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4M12 11v6M9 14h6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 12h16M7.5 8.5L4 12l3.5 3.5M16.5 8.5L20 12l-3.5 3.5"/></symbol>
+  <symbol id="i-full" viewBox="0 0 24 24"><path d="M4.5 9V4.5H9M15 4.5h4.5V9M19.5 15v4.5H15M9 19.5H4.5V15"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7.5L5 11.5l4 4"/><path d="M5 11.5h9a5 5 0 0 1 0 10h-2"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.5 7V4.5h5V7M7 7l1 12.5h8L17 7"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 19L19 5M11 5h8v8"/></symbol>
+  <symbol id="i-line" viewBox="0 0 24 24"><path d="M5 19L19 5"/></symbol>
+  <symbol id="i-rect" viewBox="0 0 24 24"><rect x="4.5" y="6.5" width="15" height="11" rx="1"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8" ry="6.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="1"/><path d="M15.5 8.5v-4h-11v11h4"/></symbol>
+</svg>
+
+<header class="bar">
+  <a class="mark" href="./" aria-label="VOD トップ">VOD</a>
+  <form class="omni" id="omni" autocomplete="off">
+    <svg class="omni-ic" aria-hidden="true"><use href="#i-link"/></svg>
+    <input id="omni-input" type="text" inputmode="url" spellcheck="false"
+      placeholder="動画の URL を貼り付けて Enter" aria-label="動画の URL">
+    <button type="button" id="btn-file" class="ib" data-tip="ファイルを開く"><svg><use href="#i-file"/></svg></button>
+    <input type="file" id="file-input" accept="video/*,.mkv" multiple hidden>
+  </form>
+  <nav class="tools" aria-label="ツール">
+    <div class="seg" id="layout-seg" role="group" aria-label="レイアウト">
+      <button data-layout="auto" data-tip="自動 G"><svg><use href="#i-grid"/></svg></button>
+      <button data-layout="1" data-tip="1列">1</button>
+      <button data-layout="2" data-tip="2列">2</button>
+      <button data-layout="3" data-tip="3列">3</button>
+      <button data-layout="4" data-tip="4列">4</button>
+      <button data-layout="focus" data-tip="1本を大きく"><svg><use href="#i-focus"/></svg></button>
+    </div>
+    <span class="sep"></span>
+    <button id="btn-draw" class="ib" data-tip="描画 D"><svg><use href="#i-pen"/></svg></button>
+    <button id="btn-shot" class="ib" data-tip="スクリーンショット S"><svg><use href="#i-camera"/></svg></button>
+    <span class="sep"></span>
+    <button id="btn-share" class="ib" data-tip="共有リンク"><svg><use href="#i-link"/></svg></button>
+    <button id="btn-session" class="ib" data-tip="セッション"><svg><use href="#i-stack"/></svg></button>
+    <button id="btn-settings" class="ib" data-tip="設定"><svg><use href="#i-sliders"/></svg></button>
+    <button id="btn-help" class="ib" data-tip="使い方 ?"><svg><use href="#i-help"/></svg></button>
+    <button id="btn-panel" class="ib" data-tip="クリップ一覧 P"><svg><use href="#i-panel"/></svg></button>
+  </nav>
+</header>
+<div id="omni-error" class="omni-error" role="alert" hidden></div>
+
+<div id="drawbar" class="drawbar" hidden>
+  <div class="seg" id="draw-tools">
+    <button data-tool="pen" data-tip="ペン"><svg><use href="#i-pen"/></svg></button>
+    <button data-tool="arrow" data-tip="矢印"><svg><use href="#i-arrow"/></svg></button>
+    <button data-tool="line" data-tip="直線"><svg><use href="#i-line"/></svg></button>
+    <button data-tool="rect" data-tip="四角"><svg><use href="#i-rect"/></svg></button>
+    <button data-tool="circle" data-tip="楕円"><svg><use href="#i-circle"/></svg></button>
+  </div>
+  <div class="swatches" id="draw-colors"></div>
+  <label class="field-inline"><span>太さ</span><input type="range" id="draw-width" min="2" max="14" value="4"></label>
+  <button id="draw-undo" class="ib" data-tip="1つ戻す Ctrl+Z"><svg><use href="#i-undo"/></svg></button>
+  <button id="draw-clear" class="ib" data-tip="すべて消す C"><svg><use href="#i-trash"/></svg></button>
+  <label class="check"><input type="checkbox" id="draw-autoclear"><span>再生で消す</span></label>
+  <button id="draw-close" class="txt">完了</button>
+</div>
+
+<main class="main">
+  <section id="stage" class="stage">
+    <div id="grid" class="grid"></div>
+    <canvas id="draw-layer" class="draw-layer"></canvas>
+    <div id="empty" class="empty">
+      <div class="empty-inner">
+        <p class="empty-lead">URL を貼り付けるか、動画ファイルをドロップ</p>
+        <dl class="empty-src">
+          <dt>YouTube</dt><dd>動画・ライブのアーカイブ</dd>
+          <dt>Twitch</dt><dd>過去の配信（/videos/）</dd>
+          <dt>Vimeo</dt><dd>公開・限定公開</dd>
+          <dt>ニコニコ</dt><dd>sm / so で始まる動画（試験対応）</dd>
+          <dt>直リンク</dt><dd>.mp4 .webm .mov .m3u8</dd>
+          <dt>ファイル</dt><dd>手元の動画ファイル</dd>
+        </dl>
+        <button id="empty-restore" class="txt" hidden></button>
+        <p class="empty-note">読み込んだ動画やメモは、このブラウザの中だけで扱います。</p>
+      </div>
+    </div>
+    <div id="drop-hint" class="drop-hint" hidden><span>ドロップして追加</span></div>
+  </section>
+
+  <aside id="insp" class="insp">
+    <nav class="insp-tabs" role="tablist">
+      <button class="on" data-tab="clips" role="tab">クリップ<span id="clip-count">0</span></button>
+      <button data-tab="markers" role="tab">マーカー<span id="marker-count">0</span></button>
+    </nav>
+    <div class="insp-body" data-panel="clips">
+      <ul id="clip-list" class="clip-list"></ul>
+      <p id="clip-empty" class="faint">まだありません。</p>
+    </div>
+    <div class="insp-body" data-panel="markers" hidden>
+      <ul id="marker-list" class="marker-list"></ul>
+      <p id="marker-empty" class="faint"><kbd>B</kbd> で現在位置に打てます。</p>
+    </div>
+  </aside>
+</main>
+
+<section class="deck">
+  <div class="transport">
+    <div class="tp-left">
+      <button class="ib" id="t-start" data-tip="先頭 Home"><svg><use href="#i-start"/></svg></button>
+      <button class="ib" id="t-back" data-tip="戻る ←"><svg><use href="#i-back"/></svg></button>
+      <button class="ib" id="t-fback" data-tip="1コマ戻る ,"><svg><use href="#i-fback"/></svg></button>
+      <button class="play" id="t-play" data-tip="再生 / 停止 Space"><svg><use href="#i-play"/></svg></button>
+      <button class="ib" id="t-ffwd" data-tip="1コマ進む ."><svg><use href="#i-ffwd"/></svg></button>
+      <button class="ib" id="t-fwd" data-tip="進む →"><svg><use href="#i-fwd"/></svg></button>
+      <div class="tc"><span id="tc-cur">00:00:00.00</span><span id="tc-dur">00:00:00</span></div>
+    </div>
+    <div class="tp-right">
+      <button class="ib" id="t-marker" data-tip="マーカー B"><svg><use href="#i-flag"/></svg></button>
+      <select id="t-rate" aria-label="再生速度">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1.00×</option>
+        <option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2.00×</option>
+      </select>
+      <button class="ib" id="t-mute" data-tip="全体ミュート M"><svg><use href="#i-vol"/></svg></button>
+      <input type="range" id="t-vol" class="vol" min="0" max="1" step="0.05" value="0.8" aria-label="音量">
+      <button class="ib" id="t-full" data-tip="全画面 F"><svg><use href="#i-full"/></svg></button>
+    </div>
+  </div>
+  <div id="timeline" class="tl"></div>
+</section>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<dialog id="dlg-share" class="dlg">
+  <form method="dialog" class="dlg-inner">
+    <header class="dlg-head"><h2>共有リンク</h2><button value="close" class="ib" aria-label="閉じる"><svg><use href="#i-x"/></svg></button></header>
+    <p class="dlg-text">このリンクを開くと、同じ動画・開始位置・マーカー・レイアウトで始まります。</p>
+    <div class="copy-row">
+      <input id="share-url" type="text" readonly>
+      <button type="button" id="share-copy" class="btn primary"><svg><use href="#i-copy"/></svg>コピー</button>
+    </div>
+    <p id="share-note" class="dlg-text faint" hidden></p>
+  </form>
+</dialog>
+
+<dialog id="dlg-session" class="dlg">
+  <form method="dialog" class="dlg-inner">
+    <header class="dlg-head"><h2>セッション</h2><button value="close" class="ib" aria-label="閉じる"><svg><use href="#i-x"/></svg></button></header>
+    <div class="copy-row">
+      <input type="text" id="session-name" placeholder="名前">
+      <button type="button" id="session-save" class="btn primary">保存</button>
+    </div>
+    <ul id="session-list" class="session-list"></ul>
+    <p class="dlg-text faint">このブラウザに保存されます。手元のファイルは名前だけを覚えるので、開いたあとに選び直してください。</p>
+    <footer class="dlg-foot">
+      <button type="button" id="session-export" class="btn">書き出し（.json）</button>
+      <button type="button" id="session-import-btn" class="btn">読み込み</button>
+      <input type="file" id="session-import" accept=".json,application/json" hidden>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="dlg-settings" class="dlg wide">
+  <form method="dialog" class="dlg-inner">
+    <header class="dlg-head"><h2>設定</h2><button value="close" class="ib" aria-label="閉じる"><svg><use href="#i-x"/></svg></button></header>
+    <div class="settings">
+      <label><span>戻る / 進む</span><span class="unit"><input type="number" id="set-skip" min="0.5" max="60" step="0.5">秒</span></label>
+      <label><span>大きく戻る / 進む</span><span class="unit"><input type="number" id="set-skip-big" min="1" max="600" step="1">秒</span></label>
+      <label><span>1コマ</span>
+        <select id="set-fps">
+          <option value="24">1/24 秒</option>
+          <option value="30">1/30 秒</option>
+          <option value="60">1/60 秒</option>
+        </select>
+      </label>
+    </div>
+    <h3>キー割り当て</h3>
+    <p class="dlg-text faint">右の枠を押してから新しいキーを押します。Esc で取り消し、Backspace で解除。1〜9 は「その動画の音だけ出す」で固定です。</p>
+    <table class="keys"><tbody id="keys-body"></tbody></table>
+    <footer class="dlg-foot"><button type="button" id="keys-reset" class="btn">初期設定に戻す</button></footer>
+  </form>
+</dialog>
+
+<dialog id="dlg-help" class="dlg wide">
+  <form method="dialog" class="dlg-inner">
+    <header class="dlg-head"><h2>使い方</h2><button value="close" class="ib" aria-label="閉じる"><svg><use href="#i-x"/></svg></button></header>
+    <ol class="steps">
+      <li><b>追加</b>上の欄に URL を貼り付けて Enter。複数行をまとめて貼っても入ります。ファイルは画面にドロップ。</li>
+      <li><b>そろえる</b>下のタイムラインの棒を左右にドラッグするか、右のクリップ一覧の ±ボタンで、同じ瞬間が重なるように開始位置を合わせます。棒は 0・再生位置・ほかの動画の端・マーカーに吸い付きます（Alt で解除）。</li>
+      <li><b>見る</b>再生・停止・シーク・コマ送りは全部の動画に同時にかかります。</li>
+      <li><b>残す</b>描画、マーカー、スクリーンショット。状態はセッションとして保存でき、共有リンクで人に渡せます。</li>
+    </ol>
+    <h3>キー</h3>
+    <div id="help-keys" class="help-keys"></div>
+    <h3>できないこと</h3>
+    <ul class="limits">
+      <li>YouTube・Twitch・Vimeo・ニコニコの映像はブラウザの仕組み上スクリーンショットに写りません。描画・名前・時刻は写ります。</li>
+      <li>Twitch とニコニコは再生速度を変えられないため、1× 以外では位置合わせのシークで追いかけます。</li>
+      <li>Kick、X、TikTok、Instagram、Twitch のクリップなど、外から再生位置を操作する仕組みがないサイトは同期できません。</li>
+      <li>直リンク・m3u8 は、配信元がブラウザからの読み込みを許可している場合だけ再生できます。</li>
+      <li>iPhone / iPad では、複数の動画を音ありで同時に再生できないことがあります。ミュートなら再生できます。</li>
+      <li>ニコニコ動画は公式に公開されていない仕組みを使っているため、将来動かなくなる可能性があります。</li>
+    </ul>
+  </form>
+</dialog>
+
+<script src="js/util.js"></script>
+<script src="js/players.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/shortcuts.js"></script>
+<script src="js/timeline.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
